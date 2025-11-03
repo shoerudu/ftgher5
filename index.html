@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Short.io Unlimited Links Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.4.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.4.0/firebase-database-compat.js"></script>
+<style>
+body{font-family:Arial;background:#f4f6f8;display:flex;justify-content:center;padding:50px;}
+.container{background:white;padding:25px;border-radius:10px;box-shadow:0 3px 10px rgba(0,0,0,0.1); width:900px;}
+input, button{width:100%; padding:10px; margin:8px 0; border-radius:5px; border:1px solid #ccc;}
+button{background:#007bff;color:white;cursor:pointer;}
+button:hover{background:#0056b3;}
+table{width:100%; border-collapse:collapse; margin-top:10px;}
+th, td{padding:8px; text-align:left; border:1px solid #ccc;}
+#lastUpdate{margin:10px 0; font-weight:bold;}
+canvas{margin-top:20px;}
+.deleteBtn{background:red;margin:0;padding:5px 10px;border-radius:3px;}
+</style>
+</head>
+<body>
+<div class="container">
+<h2>🔗 Short.io Unlimited Links Dashboard</h2>
+<input id="linkInput" placeholder="Enter Link ID">
+<button id="addButton">Add Link</button>
+<div id="lastUpdate">Last update: --</div>
+
+<h3>Link Stats</h3>
+<table id="linkTable">
+<thead><tr><th>Link ID</th><th>Human Clicks</th><th>Action</th></tr></thead>
+<tbody></tbody>
+</table>
+
+<h3>Top Countries</h3>
+<canvas id="countryChart"></canvas>
+</div>
+
+<script>
+//////////////////////////
+// Firebase Setup
+//////////////////////////
+const firebaseConfig = {
+  apiKey: "AIzaSyBKL0upnWaA-gPRds-eXkxZOwSNXlkK4f0",
+  authDomain: "xbit-2e51c.firebaseapp.com",
+  databaseURL: "https://xbit-2e51c-default-rtdb.firebaseio.com",
+  projectId: "xbit-2e51c",
+  storageBucket: "xbit-2e51c.firebasestorage.app",
+  messagingSenderId: "748487321293",
+  appId: "1:748487321293:web:e39fac98d217342e492b84"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+//////////////////////////
+// Chart
+//////////////////////////
+let countryChart;
+const linkInput = document.getElementById('linkInput');
+const addButton = document.getElementById('addButton');
+let linkIds = [];
+
+//////////////////////////
+// Page Load - load existing links
+//////////////////////////
+window.addEventListener('DOMContentLoaded', ()=>{
+    const dbRef = db.ref('links');
+    dbRef.once('value', snapshot=>{
+        const links = snapshot.val();
+        if(links){
+            Object.keys(links).forEach(linkId=>{
+                linkIds.push(linkId);
+                listenFirebase(linkId);
+            });
+        }
+    });
+});
+
+//////////////////////////
+// Add Link Button
+//////////////////////////
+addButton.addEventListener('click', async ()=>{
+    const input = linkInput.value.trim();
+    if(!input) return;
+    if(!linkIds.includes(input)){
+        linkIds.push(input);
+        try{
+            await fetch('/api/add',{
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({linkId: input})
+            });
+            listenFirebase(input);
+            linkInput.value='';
+        }catch(err){ console.error(err); }
+    }
+});
+
+//////////////////////////
+// Firebase Listener
+//////////////////////////
+function listenFirebase(linkId){
+    const linkRef = db.ref('links/' + linkId);
+    linkRef.on('value', snapshot=>{
+        const data = snapshot.val();
+        if(data) updateTableAndChart(data);
+        else removeRow(linkId);
+    });
+}
+
+//////////////////////////
+// Delete Link
+//////////////////////////
+function deleteLink(linkId){
+    if(confirm(`Are you sure you want to delete ${linkId}?`)){
+        db.ref('links/' + linkId).remove();
+        linkIds = linkIds.filter(id=>id!==linkId);
+    }
+}
+
+function removeRow(linkId){
+    const row = document.getElementById('row-' + linkId);
+    if(row) row.remove();
+    updateCountryChart(); // recalc chart
+}
+
+//////////////////////////
+// Update Table & Chart
+//////////////////////////
+function updateTableAndChart(data){
+    document.getElementById('lastUpdate').innerText = 'Last update: ' + new Date().toLocaleTimeString();
+
+    // Table
+    const tbody = document.querySelector('#linkTable tbody');
+    let row = document.getElementById('row-' + data.linkId);
+    if(!row){
+        row = document.createElement('tr');
+        row.id = 'row-' + data.linkId;
+
+        const idCell = document.createElement('td'); idCell.innerText = data.linkId;
+        const clickCell = document.createElement('td'); clickCell.innerText = data.humanClicks;
+        const actionCell = document.createElement('td'); 
+        const delBtn = document.createElement('button');
+        delBtn.innerText = 'Delete';
+        delBtn.classList.add('deleteBtn');
+        delBtn.onclick = ()=> deleteLink(data.linkId);
+        actionCell.appendChild(delBtn);
+
+        row.appendChild(idCell);
+        row.appendChild(clickCell);
+        row.appendChild(actionCell);
+        tbody.appendChild(row);
+    }else{
+        row.cells[1].innerText = data.humanClicks;
+    }
+
+    updateCountryChart();
+}
+
+//////////////////////////
+// Update Country Chart
+//////////////////////////
+function updateCountryChart(){
+    const combined = {};
+    const allRows = document.querySelectorAll('#linkTable tbody tr');
+    allRows.forEach(r=>{
+        const rowId = r.id.replace('row-','');
+        const dbRef = db.ref('links/' + rowId);
+        dbRef.once('value', snap=>{
+            const d = snap.val();
+            if(d && d.countries){
+                d.countries.forEach(c=>{
+                    combined[c.countryName] = (combined[c.countryName]||0)+c.score;
+                });
+                drawChart(combined);
+            }
+        });
+    });
+}
+
+function drawChart(data){
+    const labels = Object.keys(data);
+    const values = Object.values(data);
+    const ctx = document.getElementById('countryChart').getContext('2d');
+    if(countryChart) countryChart.destroy();
+    countryChart = new Chart(ctx,{
+        type:'bar',
+        data:{ labels, datasets:[{label:'Human Clicks by Country',data:values,backgroundColor:'rgba(0,123,255,0.6)'}]},
+        options:{ responsive:true, scales:{ y:{ beginAtZero:true } } }
+    });
+}
+</script>
+</body>
+</html>
